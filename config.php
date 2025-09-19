@@ -31,13 +31,7 @@ return [
   'LOGO_URL' => '/logo.png',
 
   // Payments (Stripe)
-  // Provide real keys via environment variables in production.
-  // STRIPE_SECRET_KEY: sk_live_...
-  // STRIPE_PUBLISHABLE_KEY: pk_live_...
-  // STRIPE_WEBHOOK_SECRET: whsec_...
-  'STRIPE_SECRET_KEY' => '',
-  'STRIPE_PUBLISHABLE_KEY' => '',
-  'STRIPE_WEBHOOK_SECRET' => '',
+  // Configure via environment (.env): STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET
 ];
 
 

@@ -36,7 +36,10 @@ class Config
       return $val === null || $val === '' ? $default : (string)$val;
     }
     $value = getenv($key);
-    return $value !== false && $value !== '' ? (string)$value : $default;
+    if ($value !== false && $value !== '') return (string)$value;
+    if (isset($_ENV[$key]) && $_ENV[$key] !== '') return (string)$_ENV[$key];
+    if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') return (string)$_SERVER[$key];
+    return $default;
   }
 
   public static function int(string $key, int $default = 0): int
@@ -47,9 +50,8 @@ class Config
       return (int)$val;
     }
     $value = getenv($key);
-    if ($value === false || $value === '') {
-      return $default;
-    }
+    if ($value === false || $value === '') { $value = $_ENV[$key] ?? ($_SERVER[$key] ?? ''); }
+    if ($value === '') return $default;
     return (int)$value;
   }
 
@@ -62,9 +64,8 @@ class Config
       return in_array($normalized, ['1', 'true', 'on', 'yes'], true);
     }
     $value = getenv($key);
-    if ($value === false || $value === '') {
-      return $default;
-    }
+    if ($value === false || $value === '') { $value = $_ENV[$key] ?? ($_SERVER[$key] ?? ''); }
+    if ($value === '') return $default;
     $normalized = strtolower((string)$value);
     return in_array($normalized, ['1', 'true', 'on', 'yes'], true);
   }
