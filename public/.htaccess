@@ -1,0 +1,9 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # SEO-friendly script URLs
+  # /script/<slug> or /scripts/<slug> → script.php?slug=<slug>
+  RewriteRule ^script/([A-Za-z0-9_\-]+)/?$ script.php?slug=$1 [QSA,L]
+  RewriteRule ^scripts/([A-Za-z0-9_\-]+)/?$ script.php?slug=$1 [QSA,L]
+</IfModule>
+
+

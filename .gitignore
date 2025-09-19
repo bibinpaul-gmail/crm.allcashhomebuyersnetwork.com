@@ -1,0 +1,8 @@
+
+# Local sync artifacts
+.ptp-sync-folder
+
+.ptp-sync/
+.env
+vendor/
+composer.phar

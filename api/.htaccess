@@ -1,0 +1,16 @@
+<IfModule mod_setenvif.c>
+  SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTP:Authorization} ^(.*)
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
+
+  # Allow /api/index.php/<route> to be handled by index.php
+  RewriteRule ^index\.php/.* index.php [QSA,PT,L]
+</IfModule>
+
+# Ensure path info after index.php is accepted
+AcceptPathInfo On
+
+
