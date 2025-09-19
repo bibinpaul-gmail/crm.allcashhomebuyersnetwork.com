@@ -73,14 +73,16 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
           await fetchJSON('/api/index.php?route=/payments/reconcile',{
             method:'POST', headers:{'Content-Type':'application/json', ...tokenHeader()}, body: JSON.stringify({ session_id })
           });
+          // Remove query params to avoid repeated reconcile on refresh
+          try { history.replaceState({}, '', location.pathname); } catch(_){ }
         }
       }catch(e){ console.warn('reconcile failed', e); }
     }
     window.addEventListener('DOMContentLoaded', ()=>{
       document.getElementById('acc-form').addEventListener('submit', createAccount);
       document.getElementById('checkout-btn').addEventListener('click', startCheckout);
-      loadAccounts();
-      reconcileIfNeeded();
+      // Ensure balance reflects immediately after returning from Stripe:
+      (async ()=>{ await reconcileIfNeeded(); await loadAccounts(); })();
     });
   </script>
   <style>
