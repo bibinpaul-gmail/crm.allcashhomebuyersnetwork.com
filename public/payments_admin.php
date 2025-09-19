@@ -25,8 +25,25 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
       const t = localStorage.getItem('token')||'';
       return t ? {Authorization: 'Bearer '+t} : {};
     }
+    function formatEST(input){
+      if(input===undefined||input===null||input==='') return '';
+      let d=null;
+      if(typeof input==='number'){
+        const ms = input < 1e12 ? input*1000 : input; d=new Date(ms);
+      } else if(typeof input==='string'){
+        const s=input.trim();
+        if(/^\d+$/.test(s)){ const n=parseInt(s,10); const ms=n<1e12?n*1000:n; d=new Date(ms); }
+        else { const t=Date.parse(s); if(!isNaN(t)) d=new Date(t); }
+      } else if(input instanceof Date){ d=input; }
+      if(!d||isNaN(d.getTime())) return String(input);
+      try{
+        return new Intl.DateTimeFormat('en-US',{ timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' }).format(d);
+      }catch(_){ return d.toLocaleString('en-US',{ timeZone:'America/New_York' }); }
+    }
     async function loadAccounts(){
       try{
+        // Ensure balances reflect Stripe by reconciling first
+        try { await fetchJSON('/api/index.php?route=/admin/reconcile-balances', { method:'POST', headers: tokenHeader() }); } catch(_){ }
         const data = await fetchJSON('/api/index.php?route=/admin/accounts',{headers: tokenHeader()});
         const sel = document.getElementById('acc-select');
         sel.innerHTML = '';
@@ -75,6 +92,7 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
           });
           // Remove query params to avoid repeated reconcile on refresh
           try { history.replaceState({}, '', location.pathname); } catch(_){ }
+          const msg = document.getElementById('recon-msg'); if (msg) msg.textContent = 'Payment reconciled at '+formatEST(Date.now());
         }
       }catch(e){ console.warn('reconcile failed', e); }
     }
@@ -119,6 +137,7 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
       <button id="checkout-btn">Checkout with Stripe</button>
     </div>
     <small>Note: this uses your admin token from localStorage to call the API.</small>
+    <div id="recon-msg" style="margin-top:6px;color:#475569;font-size:12px"></div>
 
     <h2>Accounts</h2>
     <ul id="acc-list"></ul>

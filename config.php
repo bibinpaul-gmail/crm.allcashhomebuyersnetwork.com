@@ -30,6 +30,14 @@ return [
   // Branding
   'LOGO_URL' => '/logo.png',
 
+  // Email (optional, for magic links). If empty, links will only be returned in API.
+  'MAIL_FROM' => 'noreply@m.boostzer.com', // e.g., no-reply@yourdomain.com
+  'MAIL_SUBJECT_MAGIC' => 'Your secure login link',
+  // SES (optional)
+  'SES_REGION' => '', // e.g., us-east-1
+  'SES_ACCESS_KEY' => '',
+  'SES_SECRET_KEY' => '',
+
   // Payments (Stripe)
   // Configure via environment (.env): STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET
 ];

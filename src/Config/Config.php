@@ -33,12 +33,15 @@ class Config
   {
     if (array_key_exists($key, self::$phpConfig)) {
       $val = self::$phpConfig[$key];
-      return $val === null || $val === '' ? $default : (string)$val;
+      if ($val !== null && $val !== '') {
+        return (string)$val;
+      }
+      // fall through to env lookup when php config is empty
     }
-    $value = getenv($key);
-    if ($value !== false && $value !== '') return (string)$value;
     if (isset($_ENV[$key]) && $_ENV[$key] !== '') return (string)$_ENV[$key];
     if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') return (string)$_SERVER[$key];
+    $value = getenv($key);
+    if ($value !== false && $value !== '') return (string)$value;
     return $default;
   }
 
@@ -46,12 +49,10 @@ class Config
   {
     if (array_key_exists($key, self::$phpConfig)) {
       $val = self::$phpConfig[$key];
-      if ($val === null || $val === '') return $default;
-      return (int)$val;
+      if ($val !== null && $val !== '') return (int)$val;
     }
-    $value = getenv($key);
-    if ($value === false || $value === '') { $value = $_ENV[$key] ?? ($_SERVER[$key] ?? ''); }
-    if ($value === '') return $default;
+    $value = $_ENV[$key] ?? ($_SERVER[$key] ?? getenv($key));
+    if ($value === false || $value === null || $value === '') return $default;
     return (int)$value;
   }
 
@@ -59,13 +60,13 @@ class Config
   {
     if (array_key_exists($key, self::$phpConfig)) {
       $val = self::$phpConfig[$key];
-      if ($val === null || $val === '') return $default;
-      $normalized = strtolower((string)$val);
-      return in_array($normalized, ['1', 'true', 'on', 'yes'], true);
+      if ($val !== null && $val !== '') {
+        $normalized = strtolower((string)$val);
+        return in_array($normalized, ['1', 'true', 'on', 'yes'], true);
+      }
     }
-    $value = getenv($key);
-    if ($value === false || $value === '') { $value = $_ENV[$key] ?? ($_SERVER[$key] ?? ''); }
-    if ($value === '') return $default;
+    $value = $_ENV[$key] ?? ($_SERVER[$key] ?? getenv($key));
+    if ($value === false || $value === null || $value === '') return $default;
     $normalized = strtolower((string)$value);
     return in_array($normalized, ['1', 'true', 'on', 'yes'], true);
   }

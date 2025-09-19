@@ -8,6 +8,7 @@ use MongoDB\BSON\UTCDateTime;
 use MongoDB\BSON\ObjectId;
 use App\Services\AuditLogger;
 use App\Config\Config as AppConfig;
+use App\Security\Jwt as AppJwt;
 
 require __DIR__ . '/../bootstrap.php';
 require __DIR__ . '/auth.php';
@@ -210,7 +211,7 @@ $router->add('GET', '/api/index.php/settings', function () {
 
   // Defaults
   $defaults = [
-    'admin' => ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin'],
+    'admin' => ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','magic'],
     'supervisor' => [],
     'agent' => [],
   ];
@@ -231,7 +232,7 @@ $router->add('GET', '/api/index.php/settings', function () {
     }
   }
   // Known views we want admins to always have, even if settings doc is stale
-  $knownViews = ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin'];
+  $knownViews = ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','magic'];
   $all = [];
   foreach (['admin','supervisor','agent'] as $role) {
     foreach ((array)($rbac[$role] ?? []) as $v) { $v = (string)$v; if ($v !== '') $all[$v] = true; }
@@ -1776,13 +1777,18 @@ $router->add('GET', '/api/index.php/accounts/portal', function(){
 
 // Create Stripe Checkout session (admin or portal)
 $router->add('POST', '/api/index.php/payments/checkout', function(){
-  // Allow either admin token OR portal token
+  // Allow either admin token OR portal token OR client cookie JWT
   $claims = null; $isAdmin = false;
-  try {
-    $claims = require_auth(['admin','supervisor']);
-    $isAdmin = true;
-  } catch (\Throwable $e) {
-    // try portal token instead
+  // Soft-check admin bearer token without exiting on failure
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) {
+    $maybeJwt = (string)$m[1];
+    try {
+      $c = AppJwt::verify($maybeJwt);
+      if (in_array((string)($c['role'] ?? ''), ['admin','supervisor'], true)) {
+        $claims = $c; $isAdmin = true;
+      }
+    } catch (\Throwable $e) { /* ignore */ }
   }
   $d = json_input();
   $portalToken = (string)($d['portal_token'] ?? '');
@@ -1796,8 +1802,19 @@ $router->add('POST', '/api/index.php/payments/checkout', function(){
     try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { json_response(['error'=>'invalid account_id'],400); return; }
     $acc = Mongo::collection('accounts')->findOne(['_id'=>$oid]);
   } else {
-    if ($portalToken === '') { json_response(['error'=>'portal_token required'], 401); return; }
-    $acc = Mongo::collection('accounts')->findOne(['portal_token'=>$portalToken]);
+    if ($portalToken !== '') {
+      $acc = Mongo::collection('accounts')->findOne(['portal_token'=>$portalToken]);
+    } else {
+      // Support client JWT from cookie or Authorization header
+      $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+      $cookie = $_COOKIE['client_jwt'] ?? '';
+      $jwt = '';
+      if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+      if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+      if ($jwt !== '') {
+        try { $c = AppJwt::verify($jwt); if (($c['role'] ?? '') === 'client') { $aid = (string)($c['sub'] ?? ''); try { $oid = new ObjectId($aid);} catch(\Throwable $e){ $oid=null;} if ($oid) $acc = Mongo::collection('accounts')->findOne(['_id'=>$oid]); } } catch(\Throwable $e) { /* ignore */ }
+      }
+    }
   }
   if (!$acc) { json_response(['error'=>'account not found'], 404); return; }
 
@@ -1805,8 +1822,8 @@ $router->add('POST', '/api/index.php/payments/checkout', function(){
   if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
   $pub = AppConfig::string('STRIPE_PUBLISHABLE_KEY', '');
   $base = rtrim((string)($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? ''), '/');
-  $successUrl = $isAdmin ? ($base . '/payments_admin.php?status=success') : ($base . '/client-portal.php?token=' . urlencode((string)$acc['portal_token']) . '&status=success');
-  $cancelUrl = $isAdmin ? ($base . '/payments_admin.php?status=cancel') : ($base . '/client-portal.php?token=' . urlencode((string)$acc['portal_token']) . '&status=cancel');
+  $successUrl = $isAdmin ? ($base . '/payments_admin.php?status=success') : ($base . '/client-portal.php?status=success');
+  $cancelUrl = $isAdmin ? ($base . '/payments_admin.php?status=cancel') : ($base . '/client-portal.php?status=cancel');
   $stripe = new \Stripe\StripeClient($secret);
   $session = $stripe->checkout->sessions->create([
     'mode' => 'payment',
@@ -1850,6 +1867,7 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
     $accountId = (string)($obj['metadata']['account_id'] ?? '');
     $amountTotal = (int)($obj['amount_total'] ?? 0);
     $currency = (string)($obj['currency'] ?? 'usd');
+    $created = (int)($obj['created'] ?? 0);
     if ($accountId !== '' && $amountTotal > 0) {
       try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { http_response_code(200); return; }
       // Record payment and update balance
@@ -1859,7 +1877,7 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
         'currency' => $currency,
         'stripe_session_id' => (string)($obj['id'] ?? ''),
         'stripe_payment_intent' => (string)($obj['payment_intent'] ?? ''),
-        'ts' => new UTCDateTime(time()*1000),
+        'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
       ]);
       Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => $amountTotal]]);
     }
@@ -1867,11 +1885,173 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
   http_response_code(200); echo 'OK';
 });
 
+// ===== Client Magic-Link Auth =====
+// Start: POST /client/magic/start { email, expires_minutes? }
+$router->add('POST', '/api/index.php/client/magic/start', function(){
+  $d = json_input();
+  $email = strtolower(trim((string)($d['email'] ?? '')));
+  if ($email === '') { json_response(['error'=>'email required'], 400); return; }
+  $acc = Mongo::collection('accounts')->findOne(['email'=>$email]);
+  if (!$acc) { json_response(['ok'=>true]); return; } // do not leak existence
+  $mins = (int)($d['expires_minutes'] ?? 15);
+  if ($mins < 1) { $mins = 1; }
+  if ($mins > 1440) { $mins = 1440; }
+  $expires = time() + $mins*60;
+  $token = AppJwt::issue(['sub'=>(string)$acc['_id'], 'role'=>'client', 'email'=>$email, 'exp'=>$expires]);
+  // For demo: return the link instead of sending email
+  $base = rtrim((string)($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? ''), '/');
+  $link = $base . '/client-portal.php?magic=' . urlencode($token);
+  // Optional email
+  $from = AppConfig::string('MAIL_FROM', '');
+  $sesRegion = AppConfig::string('SES_REGION', '');
+  $sesKey = AppConfig::string('SES_ACCESS_KEY', '');
+  $sesSecret = AppConfig::string('SES_SECRET_KEY', '');
+  $emailed = false; $messageId = '';
+  if ($from !== '' && $sesRegion !== '' && $sesKey !== '' && $sesSecret !== '') {
+    try {
+      $client = new \Aws\Ses\SesClient([
+        'version' => '2010-12-01',
+        'region' => $sesRegion,
+        'credentials' => [ 'key' => $sesKey, 'secret' => $sesSecret ],
+      ]);
+  $subject = AppConfig::string('MAIL_SUBJECT_MAGIC', 'Your secure login link');
+  $body = "Click to login: $link\n\nThis link expires in $mins minutes.";
+      $result = $client->sendEmail([
+        'Source' => $from,
+        'Destination' => ['ToAddresses' => [$email]],
+        'Message' => [
+          'Subject' => [ 'Charset' => 'UTF-8', 'Data' => $subject ],
+          'Body' => [ 'Text' => [ 'Charset' => 'UTF-8', 'Data' => $body ]],
+        ],
+      ]);
+      $messageId = (string)($result['MessageId'] ?? '');
+      $emailed = $messageId !== '';
+      error_log('[magic.start] emailed='.$emailed.' messageId='.$messageId.' to='.$email);
+    } catch (\Throwable $e) {
+      error_log('[magic.start] email error: '.$e->getMessage());
+    }
+  }
+  json_response(['ok'=>true, 'link'=>$link, 'emailed' => $emailed, 'message_id' => $messageId, 'expires_minutes'=>$mins]);
+});
+
+// Verify: GET /client/magic/verify?token=...
+$router->add('GET', '/api/index.php/client/magic/verify', function(){
+  $token = (string)($_GET['token'] ?? '');
+  if ($token === '') { json_response(['error'=>'token required'], 400); return; }
+  try { $claims = AppJwt::verify($token); } catch(\Throwable $e){ json_response(['error'=>'invalid'], 401); return; }
+  if (($claims['role'] ?? '') !== 'client') { json_response(['error'=>'invalid'], 401); return; }
+  // Set HttpOnly cookie for client auth
+  setcookie('client_jwt', $token, [ 'expires'=>time()+14*24*3600, 'path'=>'/', 'secure'=>true, 'httponly'=>true, 'samesite'=>'Lax' ]);
+  json_response(['ok'=>true]);
+});
+
+// Me: GET /client/me -> account basic info
+$router->add('GET', '/api/index.php/client/me', function(){
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  $cookie = $_COOKIE['client_jwt'] ?? '';
+  $jwt = '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+  if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+  if ($jwt === '') { json_response(['error'=>'missing token'], 401); return; }
+  try { $claims = AppJwt::verify($jwt); } catch(\Throwable $e){ json_response(['error'=>'invalid token'], 401); return; }
+  $aid = (string)($claims['sub'] ?? '');
+  try { $oid = new ObjectId($aid); } catch(\Throwable $e){ json_response(['error'=>'invalid account'], 400); return; }
+  $acc = Mongo::collection('accounts')->findOne(['_id'=>$oid]);
+  if (!$acc) { json_response(['error'=>'not found'], 404); return; }
+  json_response(['id'=>$aid,'name'=>(string)($acc['name']??''),'email'=>(string)($acc['email']??''),'balance_cents'=>(int)($acc['balance_cents']??0)]);
+});
+
+// Client: list recent payments (from Stripe) for authenticated client
+$router->add('GET', '/api/index.php/client/payments', function(){
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  $cookie = $_COOKIE['client_jwt'] ?? '';
+  $jwt = '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+  if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+  if ($jwt === '') { json_response(['error'=>'missing token'], 401); return; }
+  try { $claims = AppJwt::verify($jwt); } catch(\Throwable $e){ json_response(['error'=>'invalid token'], 401); return; }
+  if (($claims['role'] ?? '') !== 'client') { json_response(['error'=>'forbidden'], 403); return; }
+  $aid = (string)($claims['sub'] ?? '');
+
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $sessions = $stripe->checkout->sessions->all(['limit' => 50]);
+    $items = [];
+    foreach ($sessions->data as $sess) {
+      $metaAid = (string)($sess->metadata['account_id'] ?? '');
+      if ($metaAid !== $aid) continue;
+      if ((string)($sess->payment_status ?? '') !== 'paid') continue;
+      $items[] = [
+        'amount_cents' => (int)($sess->amount_total ?? 0),
+        'currency' => (string)($sess->currency ?? 'usd'),
+        'ts' => date(DATE_ATOM, (int)($sess->created ?? time())),
+      ];
+    }
+    usort($items, function($a,$b){ return strcmp((string)($b['ts']??''), (string)($a['ts']??'')); });
+    json_response(['items'=>$items]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe fetch failed'], 500);
+  }
+});
+
+// Reconcile: POST /client/reconcile-balance -> fetch recent Stripe sessions for this client and update balance
+$router->add('POST', '/api/index.php/client/reconcile-balance', function(){
+  // Authenticate via client cookie or bearer
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  $cookie = $_COOKIE['client_jwt'] ?? '';
+  $jwt = '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+  if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+  if ($jwt === '') { json_response(['error'=>'missing token'], 401); return; }
+  try { $claims = AppJwt::verify($jwt); } catch(\Throwable $e){ json_response(['error'=>'invalid token'], 401); return; }
+  if (($claims['role'] ?? '') !== 'client') { json_response(['error'=>'forbidden'], 403); return; }
+  $aid = (string)($claims['sub'] ?? '');
+  try { $oid = new ObjectId($aid); } catch(\Throwable $e){ json_response(['error'=>'invalid account'], 400); return; }
+
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['ok'=>false, 'reason'=>'stripe not configured']); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    // Pull recent sessions and upsert any paid ones for this account
+    $sessions = $stripe->checkout->sessions->all(['limit' => 100]);
+    foreach ($sessions->data as $sess) {
+      $metaAid = (string)($sess->metadata['account_id'] ?? '');
+      if ($metaAid !== $aid) continue;
+      if ((string)($sess->payment_status ?? '') !== 'paid') continue;
+      $amount = (int)($sess->amount_total ?? 0);
+      $currency = (string)($sess->currency ?? 'usd');
+      $sessionId = (string)($sess->id ?? '');
+      if ($sessionId === '' || $amount <= 0) continue;
+      Mongo::collection('payments')->updateOne(
+        ['stripe_session_id' => $sessionId],
+        ['$set' => [
+          'account_id' => $aid,
+          'amount_cents' => $amount,
+          'currency' => $currency,
+          'stripe_session_id' => $sessionId,
+          'ts' => new UTCDateTime((int)(($sess->created ?? time())*1000)),
+        ]],
+        ['upsert' => true]
+      );
+    }
+    // Recompute balance as sum of payments
+    $agg = Mongo::collection('payments')->aggregate([
+      ['$match' => ['account_id' => $aid]],
+      ['$group' => ['_id' => '$account_id', 'sum' => ['$sum' => '$amount_cents']]],
+    ])->toArray();
+    $sum = 0; if (!empty($agg)) { $sum = (int)($agg[0]['sum'] ?? 0); }
+    Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$set' => ['balance_cents' => $sum]]);
+    json_response(['ok'=>true, 'balance_cents'=>$sum]);
+  } catch (\Throwable $e) {
+    json_response(['ok'=>false], 500);
+  }
+});
+
 // Fallback: Reconcile a successful Checkout session when redirected back (idempotent)
 $router->add('POST', '/api/index.php/payments/reconcile', function(){
-  // Allow admin or portal token
-  $claims = null;
-  try { $claims = require_auth(['admin','supervisor','agent']); } catch (\Throwable $e) { /* portal flow may not send auth */ }
+  // No admin auth required; reconcile by session_id only (idempotent)
   $d = json_input();
   $sessionId = (string)($d['session_id'] ?? '');
   if ($sessionId === '') { json_response(['error'=>'session_id required'], 400); return; }
@@ -1887,6 +2067,7 @@ $router->add('POST', '/api/index.php/payments/reconcile', function(){
     $accountId = (string)($sess->metadata['account_id'] ?? '');
     $amount = (int)($sess->amount_total ?? 0);
     $currency = (string)($sess->currency ?? 'usd');
+    $created = (int)($sess->created ?? 0);
     if ($accountId === '' || $amount <= 0) { json_response(['error'=>'incomplete session'], 400); return; }
     // Record and update balance (idempotent on session id)
     Mongo::collection('payments')->updateOne(
@@ -1897,7 +2078,7 @@ $router->add('POST', '/api/index.php/payments/reconcile', function(){
         'currency' => $currency,
         'stripe_session_id' => $sessionId,
         'stripe_payment_intent' => (string)($sess->payment_intent?->id ?? ''),
-        'ts' => new UTCDateTime(time()*1000),
+        'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
       ]],
       ['upsert' => true]
     );
@@ -1907,6 +2088,49 @@ $router->add('POST', '/api/index.php/payments/reconcile', function(){
       try { $oid = new ObjectId($accountId); Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => $amount]]); } catch(\Throwable $e) { /* ignore */ }
     }
     json_response(['ok'=>true, 'recorded'=>true]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe fetch failed'], 500);
+  }
+});
+
+// Admin: reconcile balances from Stripe (fetch recent sessions, upsert payments, recompute balances)
+$router->add('POST', '/api/index.php/admin/reconcile-balances', function(){
+  require_auth(['admin','supervisor']);
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $sessions = $stripe->checkout->sessions->all(['limit' => 100]);
+    foreach ($sessions->data as $sess) {
+      $aid = (string)($sess->metadata['account_id'] ?? '');
+      if ($aid === '') continue;
+      if ((string)($sess->payment_status ?? '') !== 'paid') continue;
+      $amount = (int)($sess->amount_total ?? 0);
+      $currency = (string)($sess->currency ?? 'usd');
+      $sessionId = (string)($sess->id ?? '');
+      if ($amount <= 0 || $sessionId === '') continue;
+      Mongo::collection('payments')->updateOne(
+        ['stripe_session_id' => $sessionId],
+        ['$set' => [
+          'account_id' => $aid,
+          'amount_cents' => $amount,
+          'currency' => $currency,
+          'stripe_session_id' => $sessionId,
+          'ts' => new UTCDateTime(time()*1000),
+        ]],
+        ['upsert' => true]
+      );
+    }
+    // Recompute balances per account
+    $agg = Mongo::collection('payments')->aggregate([
+      ['$group' => ['_id' => '$account_id', 'sum' => ['$sum' => '$amount_cents']]],
+    ]);
+    foreach ($agg as $row) {
+      $aid = (string)($row['_id'] ?? '');
+      $sum = (int)($row['sum'] ?? 0);
+      try { $oid = new ObjectId($aid); Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$set' => ['balance_cents' => $sum]]); } catch (\Throwable $e) { /* ignore */ }
+    }
+    json_response(['ok'=>true]);
   } catch (\Throwable $e) {
     json_response(['error'=>'stripe fetch failed'], 500);
   }
@@ -1929,6 +2153,35 @@ $router->add('GET', '/api/index.php/admin/payments', function(){
     ];
   }
   json_response(['items'=>$items]);
+});
+
+// Admin: list recent payments LIVE from Stripe (no DB dependency)
+$router->add('GET', '/api/index.php/admin/payments/stripe', function(){
+  require_auth(['admin','supervisor']);
+  $limit = max(1, min(100, (int)($_GET['limit'] ?? 50)));
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $sessions = $stripe->checkout->sessions->all(['limit' => $limit]);
+    $items = [];
+    foreach ($sessions->data as $sess) {
+      $aid = (string)($sess->metadata['account_id'] ?? '');
+      if ($aid === '') continue;
+      $items[] = [
+        'account_id' => $aid,
+        'amount_cents' => (int)($sess->amount_total ?? 0),
+        'currency' => (string)($sess->currency ?? 'usd'),
+        'stripe_session_id' => (string)($sess->id ?? ''),
+        'ts' => date(DATE_ATOM, (int)($sess->created ?? time())),
+      ];
+    }
+    // Sort newest first just in case
+    usort($items, function($a,$b){ return strcmp((string)($b['ts']??''), (string)($a['ts']??'')); });
+    json_response(['items'=>$items]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe fetch failed'], 500);
+  }
 });
 
 $router->dispatch($_SERVER['REQUEST_METHOD'] ?? 'GET', $_SERVER['REQUEST_URI'] ?? '/api/index.php');

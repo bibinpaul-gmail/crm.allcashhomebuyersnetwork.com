@@ -46,6 +46,7 @@ require __DIR__ . '/../bootstrap.php';
         <a href="#" data-view="accounts" class="block px-3 py-2 rounded hover:bg-slate-100">Accounts</a>
         <a href="#" data-view="payments" class="block px-3 py-2 rounded hover:bg-slate-100">Payments</a>
         <a href="/payments_admin.php" data-view="payments-admin" target="_blank" class="block px-3 py-2 rounded hover:bg-slate-100">Payments Admin</a>
+        <a href="#" data-view="magic" class="block px-3 py-2 rounded hover:bg-slate-100">Send Magic Link</a>
         <a href="#" id="btn-logout" class="block px-3 py-2 rounded hover:bg-slate-100 text-rose-600">Logout</a>
       </nav>
     </aside>
@@ -517,6 +518,17 @@ require __DIR__ . '/../bootstrap.php';
             <div id="payments-table" class="text-sm"></div>
           </div>
         </div>
+      <div id="view-magic" class="hidden">
+        <div class="p-4 bg-white border rounded space-y-3">
+          <h3 class="font-semibold">Send Magic Link</h3>
+          <div class="flex items-center gap-2">
+            <input id="magic-email" class="px-3 py-2 border rounded w-80" placeholder="client email" />
+            <input id="magic-exp" type="number" min="1" max="1440" value="15" class="px-3 py-2 border rounded w-24" title="Expiry in minutes" />
+            <button id="btn-send-magic" class="px-3 py-2 bg-blue-600 text-white rounded">Send</button>
+          </div>
+          <div id="magic-result" class="text-sm text-slate-600"></div>
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -529,6 +541,20 @@ require __DIR__ . '/../bootstrap.php';
       try { localStorage.setItem('token', token); } catch(_){}
     }
     function api(path){ return '/api/index.php?route=' + encodeURIComponent(path); }
+    function formatEST(input){
+      if(input===undefined||input===null||input==='') return '';
+      let d=null;
+      if(typeof input==='number'){
+        const ms = input < 1e12 ? input*1000 : input; d=new Date(ms);
+      } else if(typeof input==='string'){
+        const s=input.trim();
+        if(/^\d+$/.test(s)){ const n=parseInt(s,10); const ms=n<1e12?n*1000:n; d=new Date(ms); }
+        else { const t=Date.parse(s); if(!isNaN(t)) d=new Date(t); }
+      } else if(input instanceof Date){ d=input; }
+      if(!d||isNaN(d.getTime())) return String(input);
+      try{ return new Intl.DateTimeFormat('en-US',{ timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' }).format(d); }
+      catch(_){ return d.toLocaleString('en-US',{ timeZone:'America/New_York' }); }
+    }
     const views = Array.from(document.querySelectorAll('[id^="view-"]'));
 
     // Extract reports loader into a function to avoid recursive event dispatch
@@ -817,6 +843,7 @@ require __DIR__ . '/../bootstrap.php';
     });
     document.querySelector('[data-view="scripts"]').addEventListener('click', loadScripts);
     document.querySelector('[data-view="settings"]').addEventListener('click', ()=>{ loadSettings().catch(()=>{}); });
+    document.querySelector('[data-view="magic"]').addEventListener('click', ()=>{ show('magic'); });
     // Billing/Accounts/Payments simple loaders
     document.querySelector('[data-view="billing"]').addEventListener('click', ()=>{ show('reports');
       const nav = document.querySelector('[data-view="reports"]'); if (nav) nav.dispatchEvent(new Event('click')); });
@@ -831,8 +858,11 @@ require __DIR__ . '/../bootstrap.php';
     document.querySelector('[data-view="payments"]').addEventListener('click', async ()=>{
       show('payments');
       try{
-        const res = await fetchJSON(api('/admin/payments'));
-        const rows = res.items.map(p=>`<tr class=\"border-t\"><td class=\"p-2\">$${(p.amount_cents/100).toFixed(2)}</td><td class=\"p-2\">${p.currency}</td><td class=\"p-2\">${p.account_id}</td><td class=\"p-2\">${p.ts||''}</td></tr>`).join('');
+        // Prefer live Stripe data; fallback to DB
+        let res = null; let okStripe = true;
+        try { res = await fetchJSON(api('/admin/payments/stripe')); }
+        catch(_){ okStripe = false; res = await fetchJSON(api('/admin/payments')); }
+        const rows = (res.items||[]).map(p=>`<tr class=\"border-t\"><td class=\"p-2\">$${(p.amount_cents/100).toFixed(2)}</td><td class=\"p-2\">${p.currency}</td><td class=\"p-2\">${p.account_id}</td><td class=\"p-2\">${formatEST(p.ts)||''}</td></tr>`).join('');
         document.getElementById('payments-table').innerHTML = `<table class=\"w-full text-sm\"><thead><tr><th class=\"text-left p-2\">Amount</th><th class=\"text-left p-2\">Currency</th><th class=\"text-left p-2\">Account</th><th class=\"text-left p-2\">When</th></tr></thead><tbody>${rows}</tbody></table>`;
       }catch(_){ document.getElementById('payments-table').textContent = 'Failed to load payments'; }
     });
@@ -889,6 +919,17 @@ require __DIR__ . '/../bootstrap.php';
       const titleEl = document.getElementById('title'); if (titleEl) titleEl.textContent = 'Login';
       try { await hydrateAccess(); } catch(_){}
       show('login');
+    });
+
+    document.getElementById('btn-send-magic')?.addEventListener('click', async ()=>{
+      const email = (document.getElementById('magic-email').value||'').trim();
+      if(!email){ alert('Enter email'); return; }
+      const mins = Math.max(1, Math.min(1440, parseInt(document.getElementById('magic-exp').value||'15',10)));
+      try{
+        const res = await fetchJSON(api('/client/magic/start'), { method:'POST', body: JSON.stringify({ email, expires_minutes: mins }) });
+        const tgt = document.getElementById('magic-result');
+        tgt.textContent = (res.emailed ? 'Magic link emailed.' : ('Magic link: '+res.link)) + ` (expires in ${res.expires_minutes||mins} min)`;
+      }catch(_){ alert('Failed to send link'); }
     });
 
     // Invite Agent (quick prompt-based)
@@ -2078,7 +2119,38 @@ require __DIR__ . '/../bootstrap.php';
     }
 
     document.querySelector('[data-view="data"]').addEventListener('click', async ()=>{
-      async function loadList(id, url, map){ try { const res = await fetchJSON(api(url)); document.getElementById(id).innerHTML = `<table class=\"w-full text-sm\"><thead><tr>${map.head.map(h=>`<th class=\"text-left p-2\">${h}</th>`).join('')}<th class=\"text-left p-2\"></th></tr></thead><tbody>${(res.items||[]).map(it=>`<tr class=\"border-t\">${map.cols.map(c=>`<td class=\"p-2\">${c(it)||''}</td>`).join('')}<td class=\"p-2\"><button data-del=\"${map.delPath}/${it.id}\" class=\"px-2 py-1 border rounded text-rose-700\">Delete</button></td></tr>`).join('')}</tbody></table>`; } catch(_){ document.getElementById(id).textContent = 'No data'; } }
+      function formatEST(input){
+        if (input === undefined || input === null || input === '') return '';
+        let d = null;
+        if (typeof input === 'number') {
+          const ms = input < 1e12 ? input * 1000 : input;
+          d = new Date(ms);
+        } else if (typeof input === 'string') {
+          const s = input.trim();
+          if (/^\d+$/.test(s)) {
+            const n = parseInt(s, 10);
+            const ms = n < 1e12 ? n * 1000 : n;
+            d = new Date(ms);
+          } else {
+            const t = Date.parse(s);
+            if (!isNaN(t)) d = new Date(t);
+          }
+        } else if (input instanceof Date) {
+          d = input;
+        }
+        if (!d || isNaN(d.getTime())) return String(input);
+        try {
+          return new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
+          }).format(d);
+        } catch(_) {
+          return d.toLocaleString('en-US', { timeZone: 'America/New_York' });
+        }
+      }
+      const fmt = (v)=>formatEST(v);
+      async function loadList(id, url, map){ try { const res = await fetchJSON(api(url)); document.getElementById(id).innerHTML = `<table class=\"w-full text-sm\"><thead><tr>${map.head.map(h=>`<th class=\"text-left p-2\">${h}</th>`).join('')}<th class=\"text-left p-2\"></th></tr></thead><tbody>${(res.items||[]).map(it=>`<tr class=\"border-t\">${map.cols.map(c=>`<td class=\"p-2\">${fmt(c(it))||''}</td>`).join('')}<td class=\"p-2\"><button data-del=\"${map.delPath}/${it.id}\" class=\"px-2 py-1 border rounded text-rose-700\">Delete</button></td></tr>`).join('')}</tbody></table>`; } catch(_){ document.getElementById(id).textContent = 'No data'; } }
       document.addEventListener('click', async (e)=>{ const b=e.target.closest('[data-del]'); if(!b) return; e.preventDefault(); const path=b.getAttribute('data-del'); if(!confirm('Delete item?')) return; try{ await fetchJSON(api(path), { method:'DELETE' }); b.closest('tr')?.remove(); } catch(_){ alert('Delete failed'); } });
 
       await Promise.all([
@@ -2148,7 +2220,7 @@ require __DIR__ . '/../bootstrap.php';
     });
 
     document.querySelector('[data-view="qa-rubrics"]').addEventListener('click', async ()=>{
-      try { const res = await fetchJSON(api('/admin/qa-rubrics')); document.getElementById('qa-rubrics-list').innerHTML = `<table class=\"w-full text-sm\"><thead><tr><th class=\"text-left p-2\">Name</th><th class=\"text-left p-2\">Updated</th><th class=\"text-left p-2\">Delete</th></tr></thead><tbody>${(res.items||[]).map(i=>`<tr class=\"border-t\"><td class=\"p-2\">${i.name}</td><td class=\"p-2\">${i.updated_at||''}</td><td class=\"p-2\"><button data-del-rubric=\"${i.id}\" class=\"px-2 py-1 border rounded\">Delete</button></td></tr>`).join('')}</tbody></table>`; } catch(_){ document.getElementById('qa-rubrics-list').textContent='No data'; }
+      try { const res = await fetchJSON(api('/admin/qa-rubrics')); document.getElementById('qa-rubrics-list').innerHTML = `<table class=\"w-full text-sm\"><thead><tr><th class=\"text-left p-2\">Name</th><th class=\"text-left p-2\">Updated</th><th class=\"text-left p-2\">Delete</th></tr></thead><tbody>${(res.items||[]).map(i=>`<tr class=\"border-t\"><td class=\"p-2\">${i.name}</td><td class=\"p-2\">${formatEST(i.updated_at)||''}</td><td class=\"p-2\"><button data-del-rubric=\"${i.id}\" class=\"px-2 py-1 border rounded\">Delete</button></td></tr>`).join('')}</tbody></table>`; } catch(_){ document.getElementById('qa-rubrics-list').textContent='No data'; }
       const f = document.getElementById('form-qarubric'); if (f){ f.onsubmit = async (e)=>{ e.preventDefault(); const fd=new FormData(f); let rubric=null; try{ rubric=JSON.parse(fd.get('rubric')||'null'); }catch(_){ alert('Invalid rubric JSON'); return; } const payload={ name:fd.get('name'), rubric }; try{ await fetchJSON(api('/admin/qa-rubrics'), { method:'POST', body: JSON.stringify(payload) }); alert('Rubric saved'); document.querySelector('[data-view="qa-rubrics"]').click(); } catch(_){ alert('Failed'); } }; }
       document.addEventListener('click', async (e)=>{ const b=e.target.closest('[data-del-rubric]'); if (!b) return; const id=b.getAttribute('data-del-rubric'); if (!confirm('Delete rubric?')) return; try{ await fetchJSON(api(`/admin/qa-rubrics/${id}`), { method:'DELETE' }); document.querySelector('[data-view="qa-rubrics"]').click(); } catch(_){ alert('Failed to delete'); } }, { once:true });
     });
