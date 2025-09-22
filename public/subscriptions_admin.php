@@ -60,12 +60,15 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
         } catch(_){}
         try { history.replaceState({}, '', location.pathname); } catch(_){ }
         const msg = document.getElementById('status-msg'); if (msg) msg.textContent = 'Subscription reconciled at '+formatEST(Date.now());
+        // Immediately refresh accounts to reflect new balance, and again shortly after
+        try { await loadAccounts(); } catch(_){ }
+        setTimeout(()=>{ loadAccounts().catch(()=>{}); }, 1500);
       }
     }
     window.addEventListener('DOMContentLoaded', async ()=>{
+      await reconcileIfNeeded();
       await Promise.all([loadAccounts(), loadPrices()]);
       document.getElementById('btn-start').addEventListener('click', startSubscription);
-      await reconcileIfNeeded();
     });
   </script>
   <style>
