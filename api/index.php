@@ -211,7 +211,7 @@ $router->add('GET', '/api/index.php/settings', function () {
 
   // Defaults
   $defaults = [
-    'admin' => ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','magic'],
+    'admin' => ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','subscriptions-admin','magic'],
     'supervisor' => [],
     'agent' => [],
   ];
@@ -232,7 +232,7 @@ $router->add('GET', '/api/index.php/settings', function () {
     }
   }
   // Known views we want admins to always have, even if settings doc is stale
-  $knownViews = ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','magic'];
+  $knownViews = ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','subscriptions-admin','magic'];
   $all = [];
   foreach (['admin','supervisor','agent'] as $role) {
     foreach ((array)($rbac[$role] ?? []) as $v) { $v = (string)$v; if ($v !== '') $all[$v] = true; }
@@ -1846,7 +1846,78 @@ $router->add('POST', '/api/index.php/payments/checkout', function(){
   json_response(['id' => $session->id, 'url' => $session->url, 'publishable_key' => $pub]);
 });
 
-// Stripe webhook to record payments
+// Admin: list active recurring Stripe prices (for subscriptions)
+$router->add('GET', '/api/index.php/admin/stripe/prices', function(){
+  require_auth(['admin','supervisor']);
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $prices = $stripe->prices->all([
+      'active' => true,
+      'limit' => 100,
+      'expand' => ['data.product']
+    ]);
+    $items = [];
+    foreach ($prices->data as $p) {
+      $isRecurring = isset($p->recurring) && $p->recurring;
+      if (!$isRecurring) { continue; }
+      $productName = is_object($p->product) ? (string)($p->product->name ?? $p->product->id) : (string)$p->product;
+      $items[] = [
+        'id' => (string)$p->id,
+        'product' => $productName,
+        'nickname' => (string)($p->nickname ?? ''),
+        'unit_amount' => (int)($p->unit_amount ?? 0),
+        'currency' => (string)($p->currency ?? 'usd'),
+        'interval' => (string)($p->recurring->interval ?? ''),
+        'interval_count' => (int)($p->recurring->interval_count ?? 1),
+      ];
+    }
+    json_response(['items'=>$items]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe list failed'], 500);
+  }
+});
+
+// Admin: create a subscription via Stripe Checkout for an account
+$router->add('POST', '/api/index.php/admin/subscriptions/checkout', function(){
+  require_auth(['admin','supervisor']);
+  $d = json_input();
+  $accountId = (string)($d['account_id'] ?? '');
+  $priceId = (string)($d['price_id'] ?? '');
+  $quantity = (int)($d['quantity'] ?? 1);
+  if ($accountId === '' || $priceId === '') { json_response(['error'=>'account_id and price_id required'], 400); return; }
+  if ($quantity < 1) { $quantity = 1; }
+  try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { json_response(['error'=>'invalid account_id'],400); return; }
+  $acc = Mongo::collection('accounts')->findOne(['_id'=>$oid]);
+  if (!$acc) { json_response(['error'=>'account not found'], 404); return; }
+
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  $pub = AppConfig::string('STRIPE_PUBLISHABLE_KEY', '');
+  $base = rtrim((string)($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? ''), '/');
+  $successUrl = $base . '/subscriptions_admin.php?status=success&session_id={CHECKOUT_SESSION_ID}';
+  $cancelUrl = $base . '/subscriptions_admin.php?status=cancel';
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $session = $stripe->checkout->sessions->create([
+      'mode' => 'subscription',
+      'payment_method_types' => ['card'],
+      'line_items' => [[ 'price' => $priceId, 'quantity' => $quantity ]],
+      'success_url' => $successUrl,
+      'cancel_url' => $cancelUrl,
+      'client_reference_id' => (string)$acc['_id'],
+      'subscription_data' => [ 'metadata' => [ 'account_id' => (string)$acc['_id'], 'account_email' => (string)($acc['email'] ?? '') ]],
+      'metadata' => [ 'account_id' => (string)$acc['_id'], 'account_email' => (string)($acc['email'] ?? '') ],
+      'customer_email' => (string)($acc['email'] ?? ''),
+    ]);
+    json_response(['id'=>$session->id, 'url'=>$session->url, 'publishable_key'=>$pub]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe checkout failed'], 500);
+  }
+});
+
+// Stripe webhook to record payments and subscription invoices
 $router->add('POST', '/api/index.php/payments/webhook', function(){
   $secret = AppConfig::string('STRIPE_WEBHOOK_SECRET', '');
   $payload = file_get_contents('php://input');
@@ -1877,6 +1948,64 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
         'currency' => $currency,
         'stripe_session_id' => (string)($obj['id'] ?? ''),
         'stripe_payment_intent' => (string)($obj['payment_intent'] ?? ''),
+        'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
+      ]);
+      Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => $amountTotal]]);
+    }
+  } elseif ($type === 'invoice.payment_succeeded') {
+    // Subscription invoice paid: credit account balance by the invoice total
+    $accountId = (string)($obj['metadata']['account_id'] ?? '');
+    $amountTotal = (int)($obj['total'] ?? 0);
+    $currency = (string)($obj['currency'] ?? 'usd');
+    $created = (int)($obj['created'] ?? 0);
+    $invoiceId = (string)($obj['id'] ?? '');
+    $subscriptionId = (string)($obj['subscription'] ?? '');
+    // Persist invoice record
+    Mongo::collection('invoices')->updateOne(
+      ['stripe_invoice_id' => (string)($obj['id'] ?? '')],
+      ['$set' => [
+        'stripe_invoice_id' => (string)($obj['id'] ?? ''),
+        'stripe_subscription_id' => $subscriptionId,
+        'account_id' => $accountId,
+        'total_cents' => $amountTotal,
+        'currency' => $currency,
+        'created' => new UTCDateTime((($created>0?$created:time())*1000)),
+        'raw' => $obj,
+      ]],
+      ['upsert' => true]
+    );
+    if ($accountId === '' && $subscriptionId !== '') {
+      $secretKey = AppConfig::string('STRIPE_SECRET_KEY', '');
+      if ($secretKey !== '') {
+        try {
+          $sc = new \Stripe\StripeClient($secretKey);
+          $sub = $sc->subscriptions->retrieve($subscriptionId);
+          $accountId = (string)($sub->metadata['account_id'] ?? '');
+          // Optionally persist subscription linkage
+          if ($accountId !== '') {
+            Mongo::collection('subscriptions')->updateOne(
+              ['stripe_subscription_id' => $subscriptionId],
+              ['$set' => [
+                'account_id' => $accountId,
+                'stripe_subscription_id' => $subscriptionId,
+                'status' => (string)($sub->status ?? ''),
+                'price_id' => (string)($sub->items->data[0]->price->id ?? ''),
+                'updated_at' => new UTCDateTime(time()*1000),
+              ]],
+              ['upsert' => true]
+            );
+          }
+        } catch (\Throwable $e) { /* ignore */ }
+      }
+    }
+    if ($accountId !== '' && $amountTotal > 0) {
+      try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { http_response_code(200); return; }
+      Mongo::collection('payments')->insertOne([
+        'account_id' => $accountId,
+        'amount_cents' => $amountTotal,
+        'currency' => $currency,
+        'stripe_invoice_id' => $invoiceId,
+        'stripe_subscription_id' => $subscriptionId,
         'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
       ]);
       Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => $amountTotal]]);

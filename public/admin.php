@@ -46,6 +46,7 @@ require __DIR__ . '/../bootstrap.php';
         <a href="#" data-view="accounts" class="block px-3 py-2 rounded hover:bg-slate-100">Accounts</a>
         <a href="#" data-view="payments" class="block px-3 py-2 rounded hover:bg-slate-100">Payments</a>
         <a href="/payments_admin.php" data-view="payments-admin" target="_blank" class="block px-3 py-2 rounded hover:bg-slate-100">Payments Admin</a>
+        <a href="/subscriptions_admin.php" data-view="subscriptions-admin" target="_blank" class="block px-3 py-2 rounded hover:bg-slate-100">Subscriptions Admin</a>
         <a href="#" data-view="magic" class="block px-3 py-2 rounded hover:bg-slate-100">Send Magic Link</a>
         <a href="#" id="btn-logout" class="block px-3 py-2 rounded hover:bg-slate-100 text-rose-600">Logout</a>
       </nav>
@@ -745,7 +746,7 @@ require __DIR__ . '/../bootstrap.php';
     // Settings load/save (RBAC)
     async function loadSettings(){
       const ROLES = ['admin','supervisor','agent'];
-      const VIEWS_BASE = ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin'];
+      const VIEWS_BASE = ['dashboard','contacts','leads','agents','scripts','campaigns','calls','dnc','reports','data','schedule','callbacks','qa-rubrics','howto','settings','geo','suppression','billing','accounts','payments','payments-admin','subscriptions-admin'];
       let data = { jwt_issuer:'', cors_allowed_origins:[], rbac_allowed_views:{} };
       try { data = await fetchJSON(api('/settings')); } catch(_){ }
       const issuerEl = document.getElementById('settings-issuer'); if (issuerEl) issuerEl.value = data.jwt_issuer || '';
@@ -869,6 +870,8 @@ require __DIR__ . '/../bootstrap.php';
     // Open Payments Admin external tool in a new tab without switching SPA view
     const pa = document.querySelector('[data-view="payments-admin"]');
     if (pa) pa.addEventListener('click', (e)=>{ e.preventDefault(); window.open('/payments_admin.php','_blank'); });
+    const sa = document.querySelector('[data-view="subscriptions-admin"]');
+    if (sa) sa.addEventListener('click', (e)=>{ e.preventDefault(); window.open('/subscriptions_admin.php','_blank'); });
     document.querySelector('[data-view="geo"]').addEventListener('click', ()=>{ show('geo'); renderGeoSuppLists(); });
     document.querySelector('[data-view="suppression"]').addEventListener('click', ()=>{ show('suppression'); renderGeoSuppLists(); });
     document.getElementById('btn-new-campaign')?.addEventListener('click', async ()=>{
