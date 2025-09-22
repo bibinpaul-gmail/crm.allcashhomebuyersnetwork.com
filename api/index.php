@@ -2315,7 +2315,41 @@ $router->add('POST', '/api/index.php/admin/reconcile-balances', function(){
           'amount_cents' => $amount,
           'currency' => $currency,
           'stripe_session_id' => $sessionId,
-          'ts' => new UTCDateTime(time()*1000),
+          'ts' => new UTCDateTime(((int)($sess->created ?? time()))*1000),
+        ]],
+        ['upsert' => true]
+      );
+    }
+    // Also reconcile paid invoices (subscriptions) as negative charges
+    $subsCache = [];
+    $invoices = $stripe->invoices->all(['limit' => 100, 'status' => 'paid']);
+    foreach ($invoices->data as $inv) {
+      $subscriptionId = (string)($inv->subscription ?? '');
+      $invoiceId = (string)($inv->id ?? '');
+      if ($invoiceId === '') continue;
+      // Determine account id
+      $aid = (string)($inv->metadata['account_id'] ?? '');
+      if ($aid === '' && $subscriptionId !== '') {
+        if (!array_key_exists($subscriptionId, $subsCache)) {
+          try { $subsCache[$subscriptionId] = $stripe->subscriptions->retrieve($subscriptionId); } catch (\Throwable $e) { $subsCache[$subscriptionId] = null; }
+        }
+        $subObj = $subsCache[$subscriptionId];
+        if ($subObj) { $aid = (string)($subObj->metadata['account_id'] ?? ''); }
+      }
+      if ($aid === '') continue;
+      $amount = (int)($inv->total ?? 0);
+      if ($amount <= 0) continue;
+      $currency = (string)($inv->currency ?? 'usd');
+      Mongo::collection('payments')->updateOne(
+        ['stripe_invoice_id' => $invoiceId],
+        ['$set' => [
+          'account_id' => $aid,
+          'amount_cents' => -1 * $amount,
+          'currency' => $currency,
+          'stripe_invoice_id' => $invoiceId,
+          'stripe_subscription_id' => $subscriptionId,
+          'type' => 'subscription_charge',
+          'ts' => new UTCDateTime(((int)($inv->created ?? time()))*1000),
         ]],
         ['upsert' => true]
       );
