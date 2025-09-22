@@ -1953,7 +1953,7 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
       Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => $amountTotal]]);
     }
   } elseif ($type === 'invoice.payment_succeeded') {
-    // Subscription invoice paid: credit account balance by the invoice total
+    // Subscription invoice paid: deduct account balance by the invoice total
     $accountId = (string)($obj['metadata']['account_id'] ?? '');
     $amountTotal = (int)($obj['total'] ?? 0);
     $currency = (string)($obj['currency'] ?? 'usd');
@@ -2000,15 +2000,17 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
     }
     if ($accountId !== '' && $amountTotal > 0) {
       try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { http_response_code(200); return; }
+      // Record a negative ledger entry to reflect deduction
       Mongo::collection('payments')->insertOne([
         'account_id' => $accountId,
-        'amount_cents' => $amountTotal,
+        'amount_cents' => -1 * $amountTotal,
         'currency' => $currency,
         'stripe_invoice_id' => $invoiceId,
         'stripe_subscription_id' => $subscriptionId,
         'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
+        'type' => 'subscription_charge'
       ]);
-      Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => $amountTotal]]);
+      Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => -1 * $amountTotal]]);
     }
   }
   http_response_code(200); echo 'OK';
