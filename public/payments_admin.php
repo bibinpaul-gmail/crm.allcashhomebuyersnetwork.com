@@ -93,6 +93,9 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
           // Remove query params to avoid repeated reconcile on refresh
           try { history.replaceState({}, '', location.pathname); } catch(_){ }
           const msg = document.getElementById('recon-msg'); if (msg) msg.textContent = 'Payment reconciled at '+formatEST(Date.now());
+          // Immediately refresh accounts to reflect new balance, and again shortly after
+          try { await loadAccounts(); } catch(_){ }
+          setTimeout(()=>{ loadAccounts().catch(()=>{}); }, 1500);
         }
       }catch(e){ console.warn('reconcile failed', e); }
     }
