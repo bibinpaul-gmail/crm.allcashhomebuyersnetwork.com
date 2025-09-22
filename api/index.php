@@ -1917,6 +1917,74 @@ $router->add('POST', '/api/index.php/admin/subscriptions/checkout', function(){
   }
 });
 
+// Admin: reconcile a subscription created via Checkout (deduct balance by first invoice)
+$router->add('POST', '/api/index.php/admin/subscriptions/reconcile', function(){
+  require_auth(['admin','supervisor']);
+  $d = json_input();
+  $sessionId = (string)($d['session_id'] ?? '');
+  if ($sessionId === '') { json_response(['error'=>'session_id required'], 400); return; }
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $sess = $stripe->checkout->sessions->retrieve($sessionId, [ 'expand' => ['subscription.latest_invoice'] ]);
+    // Determine account id from metadata (subscription preferred, session as fallback)
+    $accountId = '';
+    if ($sess && $sess->subscription) {
+      $sub = $sess->subscription;
+      $accountId = (string)($sub->metadata['account_id'] ?? '');
+    }
+    if ($accountId === '') { $accountId = (string)($sess->metadata['account_id'] ?? ''); }
+    // Resolve invoice
+    $invoiceId = '';
+    $amountTotal = 0; $currency = 'usd'; $created = time(); $paid = false;
+    if ($sess && $sess->subscription && $sess->subscription->latest_invoice) {
+      $inv = $sess->subscription->latest_invoice;
+      $invoiceId = (string)($inv->id ?? '');
+      $amountTotal = (int)($inv->total ?? 0);
+      $currency = (string)($inv->currency ?? 'usd');
+      $created = (int)($inv->created ?? time());
+      $paid = (bool)($inv->paid ?? false) || (string)($inv->status ?? '') === 'paid';
+    } else if ($sess && $sess->latest_invoice) {
+      // Fallback if expanded on session root
+      $inv = $sess->latest_invoice;
+      if (is_object($inv)) {
+        $invoiceId = (string)($inv->id ?? '');
+        $amountTotal = (int)($inv->total ?? 0);
+        $currency = (string)($inv->currency ?? 'usd');
+        $created = (int)($inv->created ?? time());
+        $paid = (bool)($inv->paid ?? false) || (string)($inv->status ?? '') === 'paid';
+      } else if (is_string($inv) && $inv !== '') {
+        $invoiceId = $inv;
+        $invObj = $stripe->invoices->retrieve($inv);
+        $amountTotal = (int)($invObj->total ?? 0);
+        $currency = (string)($invObj->currency ?? 'usd');
+        $created = (int)($invObj->created ?? time());
+        $paid = (bool)($invObj->paid ?? false) || (string)($invObj->status ?? '') === 'paid';
+      }
+    }
+    if ($accountId === '' || $invoiceId === '' || $amountTotal <= 0 || !$paid) { json_response(['ok'=>false, 'reason'=>'not ready'], 200); return; }
+    try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { json_response(['ok'=>false, 'reason'=>'invalid account'], 200); return; }
+    // Idempotent: if invoice already recorded, do nothing
+    $existing = Mongo::collection('payments')->findOne(['stripe_invoice_id' => $invoiceId]);
+    if ($existing) { json_response(['ok'=>true, 'recorded'=>true]); return; }
+    // Insert negative ledger and decrement balance
+    Mongo::collection('payments')->insertOne([
+      'account_id' => $accountId,
+      'amount_cents' => -1 * $amountTotal,
+      'currency' => $currency,
+      'stripe_invoice_id' => $invoiceId,
+      'stripe_subscription_id' => (string)($sess->subscription?->id ?? ''),
+      'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
+      'type' => 'subscription_charge'
+    ]);
+    Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => -1 * $amountTotal]]);
+    json_response(['ok'=>true, 'recorded'=>true]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe reconcile failed'], 500);
+  }
+});
+
 // Stripe webhook to record payments and subscription invoices
 $router->add('POST', '/api/index.php/payments/webhook', function(){
   $secret = AppConfig::string('STRIPE_WEBHOOK_SECRET', '');

@@ -53,9 +53,13 @@ $stripePk = Config::string('STRIPE_PUBLISHABLE_KEY', '');
       const usp = new URLSearchParams(location.search);
       const status = usp.get('status')||''; const session_id = usp.get('session_id')||'';
       if (status==='success' && session_id){
-        // No subscription reconcile endpoint needed; webhook will credit invoice payments.
+        try {
+          await fetchJSON('/api/index.php?route=/admin/subscriptions/reconcile',{
+            method:'POST', headers:{'Content-Type':'application/json', ...tokenHeader()}, body: JSON.stringify({ session_id })
+          });
+        } catch(_){}
         try { history.replaceState({}, '', location.pathname); } catch(_){ }
-        const msg = document.getElementById('status-msg'); if (msg) msg.textContent = 'Subscription activated at '+formatEST(Date.now());
+        const msg = document.getElementById('status-msg'); if (msg) msg.textContent = 'Subscription reconciled at '+formatEST(Date.now());
       }
     }
     window.addEventListener('DOMContentLoaded', async ()=>{
