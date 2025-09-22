@@ -101,6 +101,8 @@ $magic = isset($_GET['magic']) ? (string)$_GET['magic'] : '';
         });
         if(res.url){ window.location.href = res.url; }
       };
+      // One-time delayed refresh to reflect any webhook-updated balances (e.g., subscriptions)
+      if (!window.__didDelayedReload) { window.__didDelayedReload = true; setTimeout(loadPortal, 1500); }
     }
     window.addEventListener('DOMContentLoaded', ()=>{
       const inp = document.getElementById('portal-token');
