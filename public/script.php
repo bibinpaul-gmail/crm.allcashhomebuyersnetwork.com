@@ -8,17 +8,24 @@ Config::load(dirname(__DIR__));
 $logoDefault = Config::string('LOGO_URL', '/logo.png');
 $slug = '';
 if (preg_match('#/scripts?/(.+)$#', $_SERVER['REQUEST_URI'] ?? '', $m)) { $slug = trim($m[1]); }
+if ($slug === '' && isset($_GET['slug'])) { $slug = (string)$_GET['slug']; }
+if (strpos($slug, '?') !== false) { $slug = explode('?', $slug, 2)[0]; }
+$slug = rawurldecode(trim($slug));
 // Best-effort fetch script meta for header settings
 $header = ['logo' => $logoDefault, 'align' => 'left'];
 try {
-  $api = '/api/index.php?route=' . rawurlencode('/scripts/slug/' . $slug);
-  $ctx = stream_context_create(['http'=>['ignore_errors'=>true, 'method'=>'GET', 'timeout'=>1.5]]);
-  $raw = @file_get_contents($api, false, $ctx);
-  if ($raw) {
-    $json = json_decode($raw, true);
-    if (is_array($json)) {
-      if (!empty($json['header_logo_url'])) $header['logo'] = (string)$json['header_logo_url'];
-      if (!empty($json['header_align']) && in_array($json['header_align'], ['left','center'], true)) $header['align'] = $json['header_align'];
+  if ($slug !== '') {
+    $scheme = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+    $api = $scheme . '://' . $host . '/api/index.php?route=' . rawurlencode('/scripts/slug/' . $slug);
+    $ctx = stream_context_create(['http'=>['ignore_errors'=>true, 'method'=>'GET', 'timeout'=>1.5]]);
+    $raw = @file_get_contents($api, false, $ctx);
+    if ($raw) {
+      $json = json_decode($raw, true);
+      if (is_array($json)) {
+        if (!empty($json['header_logo_url'])) $header['logo'] = (string)$json['header_logo_url'];
+        if (!empty($json['header_align']) && in_array($json['header_align'], ['left','center'], true)) $header['align'] = $json['header_align'];
+      }
     }
   }
 } catch (\Throwable $e) { /* ignore */ }
