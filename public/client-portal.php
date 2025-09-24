@@ -87,6 +87,8 @@ $magic = isset($_GET['magic']) ? (string)$_GET['magic'] : '';
       document.getElementById('acct-info').innerHTML = `<div><b>${acctName}</b> &lt;${acctEmail}&gt; — Balance $${(balanceCents/100).toFixed(2)}</div>`;
       const fundsPayments = document.getElementById('funds-payments');
       if (fundsPayments) { fundsPayments.style.display = portalMode ? 'none' : ''; }
+      const subsWrap = document.getElementById('subs-wrap');
+      if (subsWrap) { subsWrap.style.display = portalMode ? 'none' : ''; }
       const tbody = document.getElementById('pay-body');
       if (tbody) { tbody.innerHTML = (payments||[]).map(p=>`<tr><td>$${(p.amount_cents/100).toFixed(2)}</td><td>${p.currency}</td><td>${formatEST(p.ts)}</td></tr>`).join(''); }
       const btn = document.getElementById('checkout-btn');
@@ -101,6 +103,34 @@ $magic = isset($_GET['magic']) ? (string)$_GET['magic'] : '';
         });
         if(res.url){ window.location.href = res.url; }
       };
+      // Load subscription prices and attach subscribe handler (magic-link mode only)
+      if (!portalMode) {
+        try{
+          const pr = await fetchJSON('/api/index.php?route=/client/stripe/prices');
+          const sel = document.getElementById('price-id');
+          if (sel) {
+            sel.innerHTML = (pr.items||[]).map(p=>{
+              const name = [p.product, p.nickname].filter(Boolean).join(' – ');
+              const amt = (p.unit_amount/100).toFixed(2);
+              const label = `${name} ($${amt}/${p.interval}${p.interval_count>1?(' x'+p.interval_count):''})`;
+              return `<option value="${p.id}">${label}</option>`;
+            }).join('');
+          }
+        }catch(_){ }
+        const subBtn = document.getElementById('subscribe-btn');
+        if (subBtn) subBtn.onclick = async ()=>{
+          const price = (document.getElementById('price-id')||{}).value||'';
+          const qty = Math.max(1, parseInt((document.getElementById('qty')||{}).value||'1',10));
+          if(!price){ alert('Choose a plan'); return; }
+          try{
+            const res = await fetchJSON('/api/index.php?route=/client/subscriptions/checkout',{
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ price_id: price, quantity: qty })
+            });
+            if(res.url){ window.location.href = res.url; }
+          }catch(_){ alert('Failed to start subscription'); }
+        };
+      }
       // One-time delayed refresh to reflect any webhook-updated balances (e.g., subscriptions)
       if (!window.__didDelayedReload) { window.__didDelayedReload = true; setTimeout(loadPortal, 1500); }
     }
@@ -113,14 +143,14 @@ $magic = isset($_GET['magic']) ? (string)$_GET['magic'] : '';
       const params = new URLSearchParams(location.search);
       if (params.get('status') === 'success' && params.has('session_id')) {
         const sid = params.get('session_id');
-        fetchJSON('/api/index.php?route=/payments/reconcile', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ session_id: sid })
-        }).then(()=>{
-          try{ history.replaceState({}, '', location.pathname); }catch(_){}
+        (async ()=>{
+          try { await fetchJSON('/api/index.php?route=/payments/reconcile', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ session_id: sid }) }); } catch(_){ }
+          try { await fetchJSON('/api/index.php?route=/client/subscriptions/reconcile', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ session_id: sid }) }); } catch(_){ }
+          try { await fetchJSON('/api/index.php?route=/client/reconcile-balance', { method:'POST' }); } catch(_){ }
+          try{ history.replaceState({}, '', location.pathname); }catch(_){ }
           loadPortal();
           setTimeout(loadPortal, 1500);
-        }).catch(()=>{ loadPortal(); });
+        })();
         return;
       }
       loadPortal();
@@ -162,6 +192,15 @@ $magic = isset($_GET['magic']) ? (string)$_GET['magic'] : '';
       <div class="row" style="margin-bottom:16px">
         <input id="amount" type="number" min="1" step="1" placeholder="Amount ($)" />
         <button id="checkout-btn">Add Funds</button>
+      </div>
+      <div id="subs-wrap" style="margin-bottom:16px; display:none">
+        <h2>Subscribe</h2>
+        <div class="row" style="margin-bottom:8px">
+          <select id="price-id"></select>
+          <input id="qty" type="number" min="1" value="1" />
+          <button id="subscribe-btn">Subscribe</button>
+        </div>
+        <div id="subs-msg" style="font-size:12px;color:#475569"></div>
       </div>
       <h2>Payments</h2>
       <table>

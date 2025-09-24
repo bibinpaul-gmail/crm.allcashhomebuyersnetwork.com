@@ -1879,6 +1879,140 @@ $router->add('GET', '/api/index.php/admin/stripe/prices', function(){
   }
 });
 
+// Client: list active recurring Stripe prices
+$router->add('GET', '/api/index.php/client/stripe/prices', function(){
+  // Auth via client cookie/bearer
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  $cookie = $_COOKIE['client_jwt'] ?? '';
+  $jwt = '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+  if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+  if ($jwt === '') { json_response(['error'=>'missing token'], 401); return; }
+  try { $claims = AppJwt::verify($jwt); } catch(\Throwable $e){ json_response(['error'=>'invalid token'], 401); return; }
+  if (($claims['role'] ?? '') !== 'client') { json_response(['error'=>'forbidden'], 403); return; }
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $prices = $stripe->prices->all(['active'=>true,'limit'=>100,'expand'=>['data.product']]);
+    $items = [];
+    foreach ($prices->data as $p) {
+      $isRecurring = isset($p->recurring) && $p->recurring;
+      if (!$isRecurring) continue;
+      $productName = is_object($p->product) ? (string)($p->product->name ?? $p->product->id) : (string)$p->product;
+      $items[] = [
+        'id' => (string)$p->id,
+        'product' => $productName,
+        'nickname' => (string)($p->nickname ?? ''),
+        'unit_amount' => (int)($p->unit_amount ?? 0),
+        'currency' => (string)($p->currency ?? 'usd'),
+        'interval' => (string)($p->recurring->interval ?? ''),
+        'interval_count' => (int)($p->recurring->interval_count ?? 1),
+      ];
+    }
+    json_response(['items'=>$items]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe list failed'], 500);
+  }
+});
+
+// Client: create a subscription via Stripe Checkout for self
+$router->add('POST', '/api/index.php/client/subscriptions/checkout', function(){
+  // Auth via client cookie/bearer
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  $cookie = $_COOKIE['client_jwt'] ?? '';
+  $jwt = '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+  if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+  if ($jwt === '') { json_response(['error'=>'missing token'], 401); return; }
+  try { $claims = AppJwt::verify($jwt); } catch(\Throwable $e){ json_response(['error'=>'invalid token'], 401); return; }
+  if (($claims['role'] ?? '') !== 'client') { json_response(['error'=>'forbidden'], 403); return; }
+  $aid = (string)($claims['sub'] ?? '');
+  try { $oid = new ObjectId($aid); } catch (\Throwable $e) { json_response(['error'=>'invalid account'], 400); return; }
+  $acc = Mongo::collection('accounts')->findOne(['_id'=>$oid]);
+  if (!$acc) { json_response(['error'=>'account not found'], 404); return; }
+  $d = json_input();
+  $priceId = (string)($d['price_id'] ?? '');
+  $quantity = (int)($d['quantity'] ?? 1);
+  if ($priceId === '') { json_response(['error'=>'price_id required'], 400); return; }
+  if ($quantity < 1) { $quantity = 1; }
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  $pub = AppConfig::string('STRIPE_PUBLISHABLE_KEY', '');
+  $base = rtrim((string)($_SERVER['REQUEST_SCHEME'] ?? 'https') . '://' . ($_SERVER['HTTP_HOST'] ?? ''), '/');
+  $successUrl = $base . '/client-portal.php?status=success&session_id={CHECKOUT_SESSION_ID}';
+  $cancelUrl = $base . '/client-portal.php?status=cancel';
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $session = $stripe->checkout->sessions->create([
+      'mode' => 'subscription',
+      'payment_method_types' => ['card'],
+      'line_items' => [[ 'price' => $priceId, 'quantity' => $quantity ]],
+      'success_url' => $successUrl,
+      'cancel_url' => $cancelUrl,
+      'client_reference_id' => (string)$acc['_id'],
+      'subscription_data' => [ 'metadata' => [ 'account_id' => (string)$acc['_id'], 'account_email' => (string)($acc['email'] ?? '') ]],
+      'metadata' => [ 'account_id' => (string)$acc['_id'], 'account_email' => (string)($acc['email'] ?? '') ],
+      'customer_email' => (string)($acc['email'] ?? ''),
+    ]);
+    json_response(['id'=>$session->id, 'url'=>$session->url, 'publishable_key'=>$pub]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe checkout failed'], 500);
+  }
+});
+
+// Client: reconcile a subscription created via Checkout (deduct balance by first invoice)
+$router->add('POST', '/api/index.php/client/subscriptions/reconcile', function(){
+  // Auth via client cookie/bearer
+  $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+  $cookie = $_COOKIE['client_jwt'] ?? '';
+  $jwt = '';
+  if (preg_match('/Bearer\s+(.+)/i', $hdr, $m)) { $jwt = (string)$m[1]; }
+  if ($jwt === '' && $cookie !== '') { $jwt = $cookie; }
+  if ($jwt === '') { json_response(['error'=>'missing token'], 401); return; }
+  try { $claims = AppJwt::verify($jwt); } catch(\Throwable $e){ json_response(['error'=>'invalid token'], 401); return; }
+  if (($claims['role'] ?? '') !== 'client') { json_response(['error'=>'forbidden'], 403); return; }
+  $d = json_input();
+  $sessionId = (string)($d['session_id'] ?? '');
+  if ($sessionId === '') { json_response(['error'=>'session_id required'], 400); return; }
+  $secret = AppConfig::string('STRIPE_SECRET_KEY', '');
+  if ($secret === '') { json_response(['error'=>'stripe not configured'], 500); return; }
+  try {
+    $stripe = new \Stripe\StripeClient($secret);
+    $sess = $stripe->checkout->sessions->retrieve($sessionId, [ 'expand' => ['subscription.latest_invoice'] ]);
+    $accountId = '';
+    if ($sess && $sess->subscription) { $sub = $sess->subscription; $accountId = (string)($sub->metadata['account_id'] ?? ''); }
+    if ($accountId === '') { $accountId = (string)($sess->metadata['account_id'] ?? ''); }
+    $invoiceId = '';
+    $amountTotal = 0; $currency = 'usd'; $created = time(); $paid = false;
+    if ($sess && $sess->subscription && $sess->subscription->latest_invoice) {
+      $inv = $sess->subscription->latest_invoice;
+      $invoiceId = (string)($inv->id ?? '');
+      $amountTotal = (int)($inv->total ?? 0);
+      $currency = (string)($inv->currency ?? 'usd');
+      $created = (int)($inv->created ?? time());
+      $paid = (bool)($inv->paid ?? false) || (string)($inv->status ?? '') === 'paid';
+    }
+    if ($accountId === '' || $invoiceId === '' || $amountTotal <= 0 || !$paid) { json_response(['ok'=>false, 'reason'=>'not ready'], 200); return; }
+    try { $oid = new ObjectId($accountId); } catch (\Throwable $e) { json_response(['ok'=>false, 'reason'=>'invalid account'], 200); return; }
+    $existing = Mongo::collection('payments')->findOne(['stripe_invoice_id' => $invoiceId]);
+    if (!$existing) {
+      Mongo::collection('payments')->insertOne([
+        'account_id' => $accountId,
+        'amount_cents' => -1 * $amountTotal,
+        'currency' => $currency,
+        'stripe_invoice_id' => $invoiceId,
+        'stripe_subscription_id' => (string)($sess->subscription?->id ?? ''),
+        'ts' => new UTCDateTime((($created>0?$created:time())*1000)),
+        'type' => 'subscription_charge'
+      ]);
+      Mongo::collection('accounts')->updateOne(['_id'=>$oid], ['$inc' => ['balance_cents' => -1 * $amountTotal]]);
+    }
+    json_response(['ok'=>true, 'recorded'=>true]);
+  } catch (\Throwable $e) {
+    json_response(['error'=>'stripe reconcile failed'], 500);
+  }
+});
 // Admin: create a subscription via Stripe Checkout for an account
 $router->add('POST', '/api/index.php/admin/subscriptions/checkout', function(){
   require_auth(['admin','supervisor']);
@@ -2230,7 +2364,35 @@ $router->add('POST', '/api/index.php/client/reconcile-balance', function(){
           'amount_cents' => $amount,
           'currency' => $currency,
           'stripe_session_id' => $sessionId,
-          'ts' => new UTCDateTime((int)(($sess->created ?? time())*1000)),
+          'ts' => new UTCDateTime(((int)($sess->created ?? time()))*1000),
+        ]],
+        ['upsert' => true]
+      );
+    }
+    // Pull paid invoices (subscriptions) and upsert as negative entries
+    $invoices = $stripe->invoices->all(['limit' => 100, 'status' => 'paid']);
+    foreach ($invoices->data as $inv) {
+      $metaAid = (string)($inv->metadata['account_id'] ?? '');
+      // If missing on invoice, try subscription metadata
+      if ($metaAid === '' && $inv->subscription) {
+        try { $sub = $stripe->subscriptions->retrieve((string)$inv->subscription); $metaAid = (string)($sub->metadata['account_id'] ?? ''); } catch (\Throwable $e) { $metaAid = ''; }
+      }
+      if ($metaAid !== $aid) continue;
+      $amount = (int)($inv->total ?? 0);
+      if ($amount <= 0) continue;
+      $invoiceId = (string)($inv->id ?? '');
+      if ($invoiceId === '') continue;
+      $currency = (string)($inv->currency ?? 'usd');
+      Mongo::collection('payments')->updateOne(
+        ['stripe_invoice_id' => $invoiceId],
+        ['$set' => [
+          'account_id' => $aid,
+          'amount_cents' => -1 * $amount,
+          'currency' => $currency,
+          'stripe_invoice_id' => $invoiceId,
+          'stripe_subscription_id' => (string)($inv->subscription ?? ''),
+          'type' => 'subscription_charge',
+          'ts' => new UTCDateTime(((int)($inv->created ?? time()))*1000),
         ]],
         ['upsert' => true]
       );
