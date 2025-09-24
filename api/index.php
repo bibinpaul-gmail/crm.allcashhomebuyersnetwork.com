@@ -722,6 +722,26 @@ $router->add('POST', '/api/index.php/scripts', function () {
   json_response(['ok' => true]);
 });
 
+// Upload script asset (logo)
+$router->add('POST', '/api/index.php/scripts/upload-logo', function () {
+  require_auth(['admin']);
+  if (!isset($_FILES['file'])) { json_response(['error'=>'file required'], 400); return; }
+  $f = $_FILES['file'];
+  if (($f['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) { json_response(['error'=>'upload failed'], 400); return; }
+  $tmp = (string)$f['tmp_name'];
+  $name = basename((string)$f['name']);
+  $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+  $allowed = ['png','jpg','jpeg','gif','webp','svg'];
+  if (!in_array($ext, $allowed, true)) { json_response(['error'=>'invalid file type'], 400); return; }
+  $safe = preg_replace('/[^a-zA-Z0-9_\.-]/', '_', $name);
+  $targetDir = dirname(__DIR__) . '/public/uploads';
+  if (!is_dir($targetDir)) { @mkdir($targetDir, 0755, true); }
+  $dest = $targetDir . '/' . uniqid('logo_', true) . '_' . $safe;
+  if (!@move_uploaded_file($tmp, $dest)) { json_response(['error'=>'save failed'], 500); return; }
+  $publicPath = '/uploads/' . basename($dest);
+  json_response(['ok'=>true, 'url'=>$publicPath]);
+});
+
 $router->add('GET', '/api/index.php/scripts/{id}', function ($id) {
   require_auth(['admin', 'supervisor']);
   try { $oid = new ObjectId($id); } catch (\Throwable $e) { json_response(['error' => 'invalid id'], 400); return; }

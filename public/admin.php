@@ -117,6 +117,11 @@ require __DIR__ . '/../bootstrap.php';
                   <input id="script-header-logo" placeholder="/logo.png or https://..." class="px-3 py-2 border rounded w-full" />
                 </div>
                 <div class="flex items-center gap-2">
+                  <label class="w-36">Upload logo</label>
+                  <input id="script-logo-file" type="file" accept="image/*" class="px-3 py-2 border rounded w-full" />
+                  <button id="btn-upload-logo" class="px-2 py-2 bg-slate-700 text-white rounded">Upload</button>
+                </div>
+                <div class="flex items-center gap-2">
                   <label class="w-36">Header alignment</label>
                   <select id="script-header-align" class="px-3 py-2 border rounded w-56">
                     <option value="left">Left</option>
@@ -1775,6 +1780,21 @@ require __DIR__ . '/../bootstrap.php';
       await fetchJSON(api('/scripts'), { method:'POST', body: JSON.stringify({ slug, title, sections, published, intro, geo_list: geoList, suppression_list: suppList, geo_mode: geoMode, header_logo_url: headerLogo, header_align: headerAlign }) });
       await loadScripts();
       alert('Saved');
+    });
+
+    // Upload logo handler
+    document.getElementById('btn-upload-logo')?.addEventListener('click', async (e)=>{
+      e.preventDefault();
+      const input = document.getElementById('script-logo-file');
+      if (!input || !input.files || !input.files[0]) { alert('Choose an image'); return; }
+      const fd = new FormData();
+      fd.append('file', input.files[0]);
+      try {
+        const res = await fetch(api('/scripts/upload-logo'), { method: 'POST', body: fd });
+        if (!res.ok) { alert('Upload failed'); return; }
+        const j = await res.json();
+        if (j && j.url) { document.getElementById('script-header-logo').value = j.url; alert('Uploaded'); }
+      } catch(_) { alert('Upload failed'); }
     });
     document.getElementById('btn-add-section')?.addEventListener('click', ()=>{
       const data = currentSections();
