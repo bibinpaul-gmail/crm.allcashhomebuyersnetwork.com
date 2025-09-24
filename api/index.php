@@ -2137,6 +2137,8 @@ $router->add('POST', '/api/index.php/payments/webhook', function(){
   $type = is_array($event) ? ($event['type'] ?? '') : $event->type;
   $obj = is_array($event) ? ($event['data']['object'] ?? []) : $event->data->object;
   if ($type === 'checkout.session.completed') {
+    $mode = (string)($obj['mode'] ?? '');
+    if ($mode !== 'payment') { http_response_code(200); echo 'OK'; return; }
     $accountId = (string)($obj['metadata']['account_id'] ?? '');
     $amountTotal = (int)($obj['amount_total'] ?? 0);
     $currency = (string)($obj['currency'] ?? 'usd');
@@ -2313,6 +2315,7 @@ $router->add('GET', '/api/index.php/client/payments', function(){
     $sessions = $stripe->checkout->sessions->all(['limit' => 50]);
     $items = [];
     foreach ($sessions->data as $sess) {
+      if ((string)($sess->mode ?? '') !== 'payment') continue;
       $metaAid = (string)($sess->metadata['account_id'] ?? '');
       if ($metaAid !== $aid) continue;
       if ((string)($sess->payment_status ?? '') !== 'paid') continue;
@@ -2350,6 +2353,7 @@ $router->add('POST', '/api/index.php/client/reconcile-balance', function(){
     // Pull recent sessions and upsert any paid ones for this account
     $sessions = $stripe->checkout->sessions->all(['limit' => 100]);
     foreach ($sessions->data as $sess) {
+      if ((string)($sess->mode ?? '') !== 'payment') continue;
       $metaAid = (string)($sess->metadata['account_id'] ?? '');
       if ($metaAid !== $aid) continue;
       if ((string)($sess->payment_status ?? '') !== 'paid') continue;
@@ -2425,6 +2429,7 @@ $router->add('POST', '/api/index.php/payments/reconcile', function(){
   try {
     $stripe = new \Stripe\StripeClient($secret);
     $sess = $stripe->checkout->sessions->retrieve($sessionId, [ 'expand' => ['payment_intent'] ]);
+    if ((string)($sess->mode ?? '') !== 'payment') { json_response(['ok'=>true, 'skipped'=>'subscription session'], 200); return; }
     $accountId = (string)($sess->metadata['account_id'] ?? '');
     $amount = (int)($sess->amount_total ?? 0);
     $currency = (string)($sess->currency ?? 'usd');
@@ -2561,6 +2566,7 @@ $router->add('GET', '/api/index.php/admin/payments/stripe', function(){
     $sessions = $stripe->checkout->sessions->all(['limit' => $limit]);
     $items = [];
     foreach ($sessions->data as $sess) {
+      if ((string)($sess->mode ?? '') !== 'payment') continue;
       $aid = (string)($sess->metadata['account_id'] ?? '');
       if ($aid === '') continue;
       $items[] = [
