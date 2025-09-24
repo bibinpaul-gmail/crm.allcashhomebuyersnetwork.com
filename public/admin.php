@@ -111,6 +111,19 @@ require __DIR__ . '/../bootstrap.php';
                 <input id="script-slug" placeholder="slug" class="px-3 py-2 border rounded w-40" />
                 <input id="script-title" placeholder="title" class="px-3 py-2 border rounded w-56" />
               </div>
+              <div class="grid grid-cols-1 gap-2 mt-2 text-sm">
+                <div class="flex items-center gap-2">
+                  <label class="w-36">Header logo URL</label>
+                  <input id="script-header-logo" placeholder="/logo.png or https://..." class="px-3 py-2 border rounded w-full" />
+                </div>
+                <div class="flex items-center gap-2">
+                  <label class="w-36">Header alignment</label>
+                  <select id="script-header-align" class="px-3 py-2 border rounded w-56">
+                    <option value="left">Left</option>
+                    <option value="center">Center</option>
+                  </select>
+                </div>
+              </div>
               <div class="flex gap-2">
                 <button id="btn-new-script" class="px-3 py-2 bg-blue-600 text-white rounded">New</button>
                 <button id="btn-save-script" class="px-3 py-2 bg-emerald-600 text-white rounded">Save</button>
@@ -1757,7 +1770,9 @@ require __DIR__ . '/../bootstrap.php';
       const geoList = document.getElementById('script-geo-list')?.value.trim() || '';
       const suppList = document.getElementById('script-suppression-list')?.value.trim() || '';
       const geoMode = document.getElementById('script-geo-mode')?.value || 'allow';
-      await fetchJSON(api('/scripts'), { method:'POST', body: JSON.stringify({ slug, title, sections, published, intro, geo_list: geoList, suppression_list: suppList, geo_mode: geoMode }) });
+      const headerLogo = document.getElementById('script-header-logo')?.value.trim() || '';
+      const headerAlign = document.getElementById('script-header-align')?.value || 'left';
+      await fetchJSON(api('/scripts'), { method:'POST', body: JSON.stringify({ slug, title, sections, published, intro, geo_list: geoList, suppression_list: suppList, geo_mode: geoMode, header_logo_url: headerLogo, header_align: headerAlign }) });
       await loadScripts();
       alert('Saved');
     });
@@ -1790,6 +1805,8 @@ require __DIR__ . '/../bootstrap.php';
       document.getElementById('script-title').value = s.title || '';
       document.getElementById('script-published').checked = !!s.published;
       document.getElementById('script-version').textContent = s.version ? ('Version ' + s.version) : '';
+      document.getElementById('script-header-logo').value = s.header_logo_url || '';
+      document.getElementById('script-header-align').value = (s.header_align==='center')?'center':'left';
       if (document.getElementById('script-intro')) document.getElementById('script-intro').value = s.intro || '';
       if (document.getElementById('script-geo-list')) document.getElementById('script-geo-list').value = s.geo_list || '';
       if (document.getElementById('script-geo-mode')) document.getElementById('script-geo-mode').value = s.geo_mode || 'allow';

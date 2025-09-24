@@ -680,6 +680,8 @@ $router->add('GET', '/api/index.php/scripts', function () {
     'id' => (string)$d['_id'],
     'slug' => (string)($d['slug'] ?? ''),
     'title' => (string)($d['title'] ?? ''),
+    'header_logo_url' => (string)($d['header_logo_url'] ?? ''),
+    'header_align' => (string)($d['header_align'] ?? ''),
     'geo_list' => (string)($d['geo_list'] ?? ''),
     'suppression_list' => (string)($d['suppression_list'] ?? ''),
     'geo_mode' => (string)($d['geo_mode'] ?? 'allow'),
@@ -697,6 +699,8 @@ $router->add('POST', '/api/index.php/scripts', function () {
     'slug' => strtolower(trim((string)($data['slug'] ?? ''))),
     'title' => (string)($data['title'] ?? ''),
     'intro' => (string)($data['intro'] ?? ''),
+    'header_logo_url' => (string)($data['header_logo_url'] ?? ''),
+    'header_align' => in_array(($data['header_align'] ?? 'left'), ['left','center'], true) ? $data['header_align'] : 'left',
     'geo_list' => (string)($data['geo_list'] ?? ''),
     'suppression_list' => (string)($data['suppression_list'] ?? ''),
     'geo_mode' => in_array(($data['geo_mode'] ?? 'allow'), ['allow','deny'], true) ? $data['geo_mode'] : 'allow',
@@ -732,7 +736,12 @@ $router->add('PUT', '/api/index.php/scripts/{id}', function ($id) {
   try { $oid = new ObjectId($id); } catch (\Throwable $e) { json_response(['error' => 'invalid id'], 400); return; }
   $data = json_input();
   $update = [];
-  foreach (['slug','title','sections','intro','geo_list','suppression_list','geo_mode'] as $f) if (array_key_exists($f, $data)) $update[$f] = $data[$f];
+  foreach (['slug','title','sections','intro','geo_list','suppression_list','geo_mode','header_logo_url'] as $f) if (array_key_exists($f, $data)) $update[$f] = $data[$f];
+  if (array_key_exists('header_align', $data)) {
+    $val = (string)$data['header_align'];
+    if (!in_array($val, ['left','center'], true)) { $val = 'left'; }
+    $update['header_align'] = $val;
+  }
   if (!$update) { json_response(['error' => 'no changes'], 400); return; }
   Mongo::collection('scripts')->updateOne(['_id' => $oid], ['$set' => $update]);
   AuditLogger::log((string)$claims['sub'], 'script.update', ['id' => $id]);
