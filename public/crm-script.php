@@ -240,7 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <div class="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8">
     <header class="mb-6">
       <div class="flex flex-col gap-2">
-        <img src="<?php echo h($logoUrl); ?>" alt="logo" class="h-7 self-center"/>
+        <img src="<?php echo h($logoUrl); ?>" alt="logo" class="self-center" style="height:auto;width:auto;max-width:100%"/>
         <p class="brand-blue text-base sm:text-lg font-semibold">Home Buying Agent Call Script & Lead Capture</p>
       </div>
     </header>
