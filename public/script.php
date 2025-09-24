@@ -50,7 +50,7 @@ try {
   <div class="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8">
     <header class="mb-6">
       <div class="flex flex-col gap-2">
-        <img src="<?=htmlspecialchars($header['logo'], ENT_QUOTES)?>" alt="logo" class="<?= $header['align']==='center' ? 'self-center' : '' ?>" style="height:28px;width:auto"/>
+        <img src="<?=htmlspecialchars($header['logo'], ENT_QUOTES)?>" alt="logo" class="<?= $header['align']==='center' ? 'self-center' : '' ?>" style="width:102.5px;height:auto"/>
         <p id="script-title" class="brand-blue text-base sm:text-lg font-semibold" style="text-align: <?= $header['align']==='center' ? 'center' : 'left' ?>;">Script</p>
       </div>
     </header>
